@@ -1,0 +1,31 @@
+# BlindSpot CORE requirements (Tiers 1 & 2).
+# Install into a Python 3.11 venv. This alone gives you:
+#   - Tier 1 narrator (camera -> YOLO -> voice)
+#   - Tier 2 VLM client (stub / gradio / openai modes)
+#
+# GPU NOTE (Intel Arc 140T iGPU): YOLO is accelerated via OpenVINO's GPU plugin,
+# not CUDA (there's no NVIDIA GPU here). See SETUP.md step 4-5: install a plain
+# torch (CPU is fine - it's only used for model loading/export), install
+# `openvino`, then export the .pt weights to an OpenVINO IR model and point
+# BLINDSPOT_YOLO at that folder so inference runs on the iGPU.
+
+# --- vision ---
+# NEED a recent ultralytics: device="intel:gpu"/"intel:npu"/"intel:cpu" for
+# OpenVINO-exported models only exists in newer releases (8.3.0 does NOT have
+# it - its select_device() only understands cpu/mps/CUDA-index strings and
+# raises on "intel:gpu"). Keep this unpinned (or >=) so pip grabs one that does.
+ultralytics>=8.3.0            # YOLOv8 (pulls opencv, numpy, etc.)
+opencv-python==4.10.0.84
+openvino==2025.2.0            # Intel Arc iGPU inference backend for YOLO
+
+# --- text-to-speech (neural, needs internet) ---
+edge-tts>=7.0.0
+playsound==1.2.2             # simple mp3 playback
+pyttsx3==2.90               # offline fallback voice
+
+# --- VLM client ---
+# Must match the Space's Gradio 5.9.1 (gradio_client 1.5.x pairs with Gradio 5.9).
+gradio-client==1.5.0         # for VLM_MODE="gradio"
+requests>=2.31.0             # for VLM_MODE="openai"
+pillow>=10.0.0
+numpy>=1.24                  # torch/ultralytics/opencv all work fine on numpy 2.x here

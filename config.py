@@ -1,0 +1,285 @@
+"""
+BlindSpot - central configuration.
+
+Every tunable knob lives here so you can tweak behaviour on the Intel Core Ultra
+laptop (Arc 140T iGPU, 32 GB shared RAM) WITHOUT editing the logic modules. Read
+the comments; defaults assume YOLO is running through OpenVINO on the Arc iGPU
+(see SETUP.md).
+
+Nothing here imports heavy libraries, so it is cheap to import from anywhere.
+"""
+
+from __future__ import annotations
+import os
+
+
+# ---------------------------------------------------------------------------
+# 1. CAMERA / VIDEO SOURCE
+# ---------------------------------------------------------------------------
+# 0        -> default laptop webcam
+# 1, 2 ... -> other attached cameras
+# "http://192.168.x.x:8080/video"  -> phone via the "IP Webcam" Android app
+# "path/to/file.mp4"               -> a video file (handy for repeatable tests)
+CAMERA_SOURCE: int | str = int(os.getenv("BLINDSPOT_CAMERA", "0"))
+
+# Downscale frames before YOLO for speed. 640 is YOLO's native size and a good
+# balance on the Arc 140T iGPU. Lower = faster but misses small objects.
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
+
+# Target processing FPS for the fast local loop. The loop self-throttles to
+# roughly this rate. YOLOv8m via OpenVINO on the Arc 140T iGPU easily hits this.
+TARGET_FPS = 15
+
+
+# ---------------------------------------------------------------------------
+# 2. VISION (YOLO)
+# ---------------------------------------------------------------------------
+# Model options:
+#   yolov8n.pt  ~6 MB   fastest, least accurate  (nano)
+#   yolov8s.pt  ~22 MB  fast, good accuracy      (small)
+#   yolov8m.pt  ~50 MB  best balance on the Arc iGPU (medium)  <-- default
+#   rtdetr-x.pt ~260 MB most accurate but heavy; still only the same 80 COCO
+#                       classes. Not recommended here.
+#
+# For GPU-accelerated inference on the Arc 140T, point this at the OpenVINO
+# export instead of the raw .pt (see SETUP.md step 5):
+#   BLINDSPOT_YOLO=yolov8m_openvino_model/
+# A folder ending in "_openvino_model" is auto-detected by VisionModel and
+# routed to the OpenVINO "intel:gpu" device instead of torch/CUDA.
+#
+# IMPORTANT: a bigger detector does NOT recognize *new* kinds of objects - every
+# YOLO/RT-DETR model knows the same 80 COCO classes. "Recognize anything" is the
+# VLM's job, not YOLO's. YOLO is just the fast, cheap "something is there" layer.
+YOLO_MODEL = os.getenv("BLINDSPOT_YOLO", "yolov8m.pt")
+
+# Ignore detections below this confidence (0-1). 0.50 is a good middle ground.
+YOLO_CONFIDENCE = 0.50
+
+# "auto" picks the best available backend:
+#   - "intel:gpu" when YOLO_MODEL is an *_openvino_model/ folder and the Arc
+#     iGPU's OpenVINO GPU plugin is available
+#   - "cuda:0" when an NVIDIA GPU + CUDA torch are present (not this machine)
+#   - "cpu" otherwise
+# You can also force it: "intel:gpu", "intel:cpu", "intel:npu", "cpu".
+YOLO_DEVICE = os.getenv("BLINDSPOT_DEVICE", "auto")
+
+
+# ---------------------------------------------------------------------------
+# 3. TTS (text to speech)
+# ---------------------------------------------------------------------------
+# "edge"    -> Microsoft Edge neural voices (best sounding, needs internet)
+# "pyttsx3" -> fully offline robotic fallback (never fails, no internet)
+TTS_ENGINE = os.getenv("BLINDSPOT_TTS", "edge")
+
+# A natural-sounding Edge voice. Browse more with:  edge-tts --list-voices
+EDGE_VOICE = "en-US-AriaNeural"
+EDGE_RATE = "+0%"     # speak faster with e.g. "+15%"
+
+# Don't repeat the exact same spoken sentence within this many seconds. Stops
+# the narrator from saying "person ahead" 15 times a second.
+SPEECH_COOLDOWN_SECONDS = 4.0
+
+
+# ---------------------------------------------------------------------------
+# 4. VLM BRAIN (Qwen2.5-VL-7B on a Hugging Face Space / rented GPU)
+# ---------------------------------------------------------------------------
+# "stub"   -> no network at all; returns a fake canned answer. Use this to test
+#             the whole pipeline WITHOUT spending GPU money. START HERE.
+# "gradio" -> talk to the Hugging Face Space via gradio_client. RECOMMENDED for
+#             the real brain (works reliably on HF Spaces).
+# "http"   -> POST to a custom /api/describe route (only if you self-host a server
+#             that exposes one; the HF Gradio Space does NOT).
+# "openai" -> talk to any OpenAI-compatible /chat/completions endpoint
+#             (vLLM, LM Studio, Ollama, cloud APIs).
+VLM_MODE = os.getenv("BLINDSPOT_VLM", "stub")
+
+# For VLM_MODE="gradio": the Space id ("user/space-name") or full URL.
+#   e.g. "scorp2111/blindspot-vlm"
+VLM_GRADIO_SPACE = os.getenv("BLINDSPOT_VLM_SPACE", "your-username/blindspot-vlm")
+# The named API endpoint exposed by the Space (see vlm_space/app.py).
+VLM_GRADIO_API_NAME = "/describe"
+
+# For VLM_MODE="http" only (custom self-hosted server, not the HF Space).
+VLM_HTTP_URL = os.getenv("BLINDSPOT_VLM_URL_HTTP",
+                         "https://your-username-blindspot-vlm.hf.space")
+
+# For VLM_MODE="openai": defaults target Nebius Token Factory's GLM-5.3-Flash
+# (zai-org/GLM-5.3-Flash) - the CHEAPEST confirmed image-capable ("image2text")
+# model on Nebius's live catalog ($0.15/$0.50 per M tokens), OpenAI-compatible.
+# Get a key at https://tokenfactory.nebius.com/ then set BLINDSPOT_VLM=openai and
+# BLINDSPOT_VLM_KEY=<key> (env vars, or paste the key directly below) - no other
+# code changes needed. Other confirmed vision options there if you want to swap:
+#   - "openbmb/MiniCPM-V-4_5"            $0.658 / $1.11 per M tokens, 32K ctx -
+#                                        GPT-4o-level OCR benchmarks, best for
+#                                        "read this sign/text" accuracy
+#   - "Qwen/Qwen3.8-27B"                 $0.45 / $3.00 per M tokens, 262K ctx -
+#                                        the only Qwen-branded vision model here
+#   - "deepseek-ai/DeepSeek-V4.1-Flash"  $0.30 / $1.20 per M tokens, 1048K ctx
+# NOTE: there is NO Qwen2.5-VL-7B and NO 30B vision model on Nebius - the 30B
+# models that exist (Qwen3-30B-A3B-Instruct-2507, Nemotron-3-Nano-30B-A3B) are
+# text2text only and cannot accept images. Qwen2.5-VL-7B only exists on
+# OpenRouter's free tier (see below), not on Nebius.
+# Free alternative (if you'd rather not spend anything): OpenRouter's
+# "qwen/qwen-2.5-vl-7b-instruct:free" at
+# https://openrouter.ai/api/v1/chat/completions (key from openrouter.ai/keys).
+VLM_OPENAI_URL = os.getenv("BLINDSPOT_VLM_URL", "https://api.tokenfactory.nebius.com/v1/chat/completions")
+VLM_OPENAI_MODEL = os.getenv("BLINDSPOT_VLM_MODEL", "zai-org/GLM-5.3-Flash")
+
+# Shared secret / API key. For Nebius Token Factory: an API key from
+# https://tokenfactory.nebius.com/
+VLM_API_KEY = os.getenv("BLINDSPOT_VLM_KEY", "")
+
+# For VLM_MODE="claude_agent": the model name passed to the Claude Agent SDK.
+# Authenticates via the local Claude Code CLI subscription login - NO API key.
+# Default: Haiku 4.5 (cheapest Claude vision model, best for subscription cap).
+# Swap to "claude-sonnet-5-5" if you want quality-first.
+VLM_CLAUDE_MODEL = os.getenv("BLINDSPOT_VLM_MODEL", "claude-haiku-4-5-20251001")
+
+# How long to wait for the VLM before giving up (seconds). Cold Spaces are slow.
+VLM_TIMEOUT = 60
+
+
+# ---------------------------------------------------------------------------
+# 5. AUDIO SCENE (YAMNet) - Tier 3, optional install
+# ---------------------------------------------------------------------------
+YAMNET_HANDLE = "https://tfhub.dev/google/yamnet/1"
+# Seconds of audio to classify at a time. YAMNet wants ~0.975s minimum.
+AUDIO_WINDOW_SECONDS = 1.0
+AUDIO_SAMPLE_RATE = 16000            # YAMNet is fixed at 16 kHz
+# Ignore sound classes below this score (0-1).
+AUDIO_CONFIDENCE = 0.30
+
+
+# ---------------------------------------------------------------------------
+# 6. SPEECH-TO-TEXT (Whisper) - Tier 3
+# ---------------------------------------------------------------------------
+# tiny / base / small ... base is the sweet spot for a 3050.
+WHISPER_MODEL = "base"
+# Hold this key (in the terminal) to record a question, release to transcribe.
+# (Push-to-talk avoids needing wake-word detection in a hackathon.)
+PUSH_TO_TALK_KEY = "space"
+
+
+# ---------------------------------------------------------------------------
+# 7. THE FUNNEL - tracker + flag engine (turns the 20/sec firehose into
+#    rare, meaningful actions).  See blindspot/flag.py and blindspot/tracker.py.
+# ---------------------------------------------------------------------------
+
+# --- 7a. Object tracking (persistence, approach, obstruction) ---
+# Two boxes count as the "same object" across frames if their overlap (IoU) is
+# at least this. Lower = more forgiving matching (good for fast movement).
+TRACK_IOU_MATCH = 0.20
+# Drop a track after it's been unseen for this many frames.
+TRACK_MAX_MISSES = 8
+# An object must be seen this many CONSECUTIVE frames before we trust it. This
+# kills 1-frame flickers and YOLO misfires (a big source of false "caution!").
+TRACK_MIN_FRAMES = 3
+# How many recent frames of box-size we keep to measure growth.
+APPROACH_WINDOW_FRAMES = 6
+# An object is "approaching" if its box grew by at least this ratio across the
+# window (1.6 = grew 60%). Higher = only warn on fast loomers.
+APPROACH_GROWTH_RATIO = 1.6
+# ...AND it must already occupy at least this fraction of the frame (so we don't
+# warn about a tiny thing far away that happens to be growing).
+APPROACH_MIN_AREA = 0.04
+# If ANY single box covers at least this fraction of the frame AND stays that big
+# for OBSTRUCTION_MIN_FRAMES in a row, we treat the camera as OBSTRUCTED (a hand
+# over the lens). Raised high + persistence-gated so a normal close-up face at
+# desk distance does NOT constantly trip it.
+OBSTRUCTION_AREA = 0.82
+OBSTRUCTION_MIN_FRAMES = 5
+
+# --- 7b. Safety: obstacles + approaching hazards ---
+# APPROACHING hazards (box growing fast) - these get the most urgent warning.
+DANGER_OBJECTS = {
+    "person", "car", "truck", "bus", "motorcycle", "bicycle",
+    "train", "dog", "skateboard",
+}
+
+# OBSTACLE reflex (the "don't let them trip" rule): ANY object - chair, bag,
+# box, table, backpack, person, anything - that is close AND in the walking path
+# gets an instant caution, even if it's stationary and not in DANGER_OBJECTS.
+# A blind user can trip on a bag; announcing it is our job.
+#
+# An object counts as an obstacle-in-path if:
+#   - its box is at least OBSTACLE_MIN_AREA of the frame (i.e. close), AND
+#   - its center is within the middle OBSTACLE_PATH_FRACTION of the frame width
+#     (i.e. roughly in front, where you'd walk into it).
+# Obstacle warning is a QUIET safety net, not the main voice. Only fire for
+# things that are genuinely VERY close and directly ahead (a real trip risk) -
+# not a laptop sitting on the desk in front of you. The VLM describes everything
+# else; this reflex is just the instant "watch out" a human friend gives once.
+# 0.15 ~= the object fills 15% of the view: roughly 1-1.5m from a chair-sized
+# object. Early enough to stop before hitting it, big enough not to nag about
+# furniture across the room. (0.22 was too late - a chair you were walking
+# into never triggered; 0.06 was too eager - the desk laptop nagged.)
+OBSTACLE_MIN_AREA = 0.15
+OBSTACLE_PATH_FRACTION = 0.50     # center 50% of width = "in your path"
+# Never repeat the same obstacle warning within this many seconds.
+OBSTACLE_SAY_ONCE_SECONDS = 15.0
+# Objects that are never worth warning about as trip hazards (too small / part of
+# the scene, not on the floor). Tune as needed.
+OBSTACLE_IGNORE = {"tie", "clock", "kite", "frisbee"}
+
+# --- 7c. The VLM is the mind ---
+# Instead of Python deciding WHAT and WHEN to narrate, we simply OFFER the VLM a
+# frame periodically (or on change) and let IT decide: speak something new, or
+# reply NOTHING. Memory of recent outputs is passed so it never repeats.
+#
+# Enable the companion (proactive) behaviour at all.
+PROACTIVE_ENABLED = True
+# Offers fire ONLY when the scene actually changes (the SET of objects present
+# changed - something entered or left). A static scene means SILENCE, which is
+# correct: a friend doesn't re-describe the same desk every 10 seconds.
+PROACTIVE_ON_CHANGE = True
+# Optional slow heartbeat: re-offer even without change every N seconds. OFF by
+# default - the 7B model can't reliably say NOTHING for an unchanged scene, so a
+# timer just produces rephrased repeats of the same description.
+PROACTIVE_TIMER_ENABLED = False
+PROACTIVE_INTERVAL_SECONDS = 20.0
+# How many recent spoken lines to show the VLM AND to check no-repeat against.
+MEMORY_LINES = 8
+# HARD no-repeat: if a new VLM answer is at least this similar (0-1) to something
+# recently said, we suppress it in Python. We do NOT trust the 7B model to obey
+# "don't repeat" on its own - this is the deterministic guarantee.
+VLM_DEDUP_SIMILARITY = 0.72
+# Don't repeat the SAME danger warning within this many seconds (the reflex has a
+# short memory too, so it warns once per approaching object, not every frame).
+SAY_ONCE_SECONDS = 8.0
+
+# --- 7d. Global VLM rate limit (protects the paid GPU / subscription cap) ---
+# Never OFFER the VLM more often than this (a direct question always goes through).
+# Bumped from 5.0s -> 7.0s to leave extra headroom under the Claude Code
+# subscription's 5-hour rolling allowance when using VLM_MODE=claude_agent.
+VLM_MIN_INTERVAL_SECONDS = 7.0
+# While the user is MOVING, space-shift updates are rarer - walking is when the
+# instant cautions matter, and a slower rich description avoids talking over them.
+VLM_MIN_INTERVAL_MOVING = 15.0
+
+# --- 7d2. Ego-motion (is the USER moving or sitting?) ---
+# Mean absolute gray diff (0-255) between consecutive downsampled frames above
+# which we call it wearer motion. Walking swings the whole frame -> big diffs;
+# sitting produces tiny ones even when something moves within the scene.
+MOTION_DIFF_THRESHOLD = 9.0
+MOTION_ON_FRAMES = 2      # consecutive high-diff frames to enter "moving"
+MOTION_OFF_FRAMES = 6     # consecutive calm frames to settle back to "still" (~2s)
+
+# --- 7e. Mode-by-voice ---
+# If the user's spoken input contains one of these, it's treated as setting a
+# STANDING INSTRUCTION (how they want BlindSpot to behave) rather than a one-off
+# question. Everything else is a normal question.
+MODE_PHRASES = {
+    "keep me company", "talk to me", "describe everything", "stop talking",
+    "be quiet", "only warn", "only tell me", "from now on", "keep talking",
+    "narrate", "don't talk", "less talking", "more detail",
+}
+
+# --- 7f. Optional sound boost (only used if audio/YAMNet is running) ---
+# If a danger object is approaching AND one of these sounds is heard, we treat it
+# as higher-confidence (the cross-modal sight+sound cue). Purely additive: audio
+# being off never breaks anything.
+HAZARD_SOUNDS = {
+    "vehicle", "car", "engine", "truck", "traffic",
+    "horn", "honk", "siren", "emergency", "motorcycle", "bus", "train",
+}
